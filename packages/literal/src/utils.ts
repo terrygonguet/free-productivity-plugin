@@ -16,3 +16,9 @@ export function traverse(
 		cb(tree)
 	} else throw new Error("Not implemented yet")
 }
+
+export function collect<T>(tree: RenderedComponent, cb: (comp: RenderedComponent) => T): T[] {
+	const results = tree.children?.flatMap(comp => collect(comp.component, cb)) ?? []
+	results.push(cb(tree))
+	return results
+}

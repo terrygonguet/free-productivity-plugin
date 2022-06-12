@@ -6,6 +6,7 @@ type Listener<T> = (value: T) => void
 
 export interface Readable<T> {
 	subscribe(f: Listener<T>): Unsubscriber
+	get(): T
 }
 
 export interface Writable<T> extends Readable<T> {
@@ -14,27 +15,8 @@ export interface Writable<T> extends Readable<T> {
 }
 
 export function readable<T>(initialValue: T, start: OnStartCallback<T>): Readable<T> {
-	let value = initialValue
-	let listeners: Listener<T>[] = []
-	let stop: OnStopCallback | void = undefined
-
-	function set(newValue: T) {
-		value = newValue
-		listeners.forEach(l => l(value))
-	}
-
-	return {
-		subscribe(f) {
-			f(value)
-			let prev = listeners
-			listeners = [...listeners, f]
-			if (prev.length == 0) stop = start(set)
-			return function () {
-				listeners = listeners.filter(l => l != f)
-				if (listeners.length == 0) stop?.()
-			}
-		},
-	}
+	const { subscribe, get } = writable(initialValue, start)
+	return { subscribe, get }
 }
 
 export function writable<T>(initialValue: T, start?: OnStartCallback<T>): Writable<T> {
@@ -49,18 +31,22 @@ export function writable<T>(initialValue: T, start?: OnStartCallback<T>): Writab
 
 	return {
 		subscribe(f) {
-			f(value)
+			const cb = f.bind(undefined)
+			cb(value)
 			let prev = listeners
-			listeners = [...listeners, f]
+			listeners = [...listeners, cb]
 			if (prev.length == 0) stop = start?.(set)
 			return function () {
-				listeners = listeners.filter(l => l != f)
+				listeners = listeners.filter(l => l != cb)
 				if (listeners.length == 0) stop?.()
 			}
 		},
 		set,
 		update(f) {
 			set(f(value))
+		},
+		get() {
+			return value
 		},
 	}
 }
@@ -100,6 +86,9 @@ export function derived<T, U>(dependencies: Readable<T> | any[], f: (value: T) =
 			return function () {
 				listeners = listeners.filter(l => l != g)
 			}
+		},
+		get() {
+			return value
 		},
 	}
 }

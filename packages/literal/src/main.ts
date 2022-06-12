@@ -1,5 +1,5 @@
 import { derived, Writable, writable } from "./reactive"
-import { traverse } from "./utils"
+import { collect, traverse } from "./utils"
 export * from "./reactive"
 export { arrayWith } from "./utils"
 
@@ -21,27 +21,18 @@ const defaultColors = {
 
 export type Component<Args extends any[]> = (context: Context, ...args: Args) => RenderedComponent
 
-type createContext = (
-	dimensions: { width: number; height: number; dx: number; dy: number },
-	rerender: (dimensions: [number, number]) => void,
-	stateNode: StateNode,
-	colorMap: ColorMap,
-) => Context
-
 export interface Context {
 	width: number
 	height: number
 	colors: Writable<{ [name: string]: string }>
-	colorNames: string[]
-	requestRender(): void
-	useState<T>(initialValue: T): [T, (value: T) => void]
+	setColor(interval: ColorInterval): ColorInterval
+	useStore<T>(initialValue: T): Writable<T>
+	useInput(store: Writable<string>): InputStore
 	renderChild<Args extends any[]>(
 		component: Component<Args>,
 		dimensions: { width: number; height: number; x: number; y: number },
 		...args: Args
 	): ChildComponent
-	setColor(x: number, y: number, color: ColorOptions, length?: number): void
-	clearColors(): void
 }
 
 export interface ChildComponent {
@@ -50,10 +41,20 @@ export interface ChildComponent {
 	component: RenderedComponent
 }
 
+type ColorInterval = {
+	y: number
+	start: number
+	fg?: string
+	bg?: string
+	end?: number
+	length?: number
+}
+
 export interface RenderedComponent {
 	text: string[]
 	children?: ChildComponent[]
 	onDestroy?(): void
+	colors?: ColorInterval[]
 }
 
 export interface LiteralOptions {
@@ -66,10 +67,9 @@ export interface LiteralOptions {
 	}
 }
 
-interface StateNode {
-	values: any[]
-	children: Map<Function, StateNode>
-	curIndex: number
+export interface InputStore extends Writable<string> {
+	focus(): void
+	cleanup(): void
 }
 
 export function Literal({ target, dev = false, colors = defaultColors }: LiteralOptions) {
@@ -112,9 +112,6 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 	)
 	root.append(wrapper)
 
-	const styles = document.createElement("style")
-	document.head.append(styles)
-
 	const referenceObserver = new ResizeObserver(([entry]) => {
 		charSize.set([entry.contentRect.width, entry.contentRect.height])
 	})
@@ -138,8 +135,10 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 	)
 	if (dev) derived(size, size => console.log("Grid size changed to " + JSON.stringify(size)))
 
+	const styles = document.querySelector("style#literal-styles") ?? document.createElement("style")
+	styles.id = "literal-styles"
+	document.head.append(styles)
 	const reactiveColors = writable(colors)
-	let colorNames: string[] = []
 	reactiveColors.subscribe(colors => {
 		root.style.color = colors.defaultFG
 		root.style.backgroundColor = colors.defaultBG
@@ -156,47 +155,81 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 			`,
 		])
 		styles.innerHTML = vars.join("\n")
-		colorNames = Object.keys(colors).filter(name => !["defaultFG", "defaultBG"].includes(name))
 	})
 
-	const createContext: createContext = (
-		{ width, height, dx, dy },
-		rerender,
-		stateNode,
-		colorMap,
-	) => {
+	function createContext(
+		{ width, height, dx, dy }: { width: number; height: number; dx: number; dy: number },
+		rerender: (dimensions: [number, number]) => void,
+		stateNode: StateNode,
+		inputsMap: Map<Writable<string>, HTMLTextAreaElement> = new Map(),
+	): Context {
 		let rafID: number
 		function requestRender() {
 			cancelAnimationFrame(rafID)
 			rafID = requestAnimationFrame(() => {
-				const clear = size.subscribe(rerender)
-				clear()
+				const $size = size.get()
+				rerender($size)
 			})
 		}
+
 		return {
 			width,
 			height,
 			colors: reactiveColors,
-			colorNames,
-			requestRender,
-			useState<T>(initialValue: T) {
+			setColor({ y, start, end, length, fg, bg }) {
+				return {
+					y: y + dy,
+					start: start + dx,
+					end: end ? end + dx : undefined,
+					length,
+					fg,
+					bg,
+				}
+			},
+			useStore(initialValue) {
 				let curIndex = stateNode.curIndex++
-				const value = stateNode.values[curIndex] ?? initialValue
-				stateNode.values[curIndex] = value
-				return [
-					value,
-					(newValue: T) => {
-						stateNode.values[curIndex] = newValue
-						requestRender()
+				const store = stateNode.stores[curIndex]
+				if (store) return store
+				else {
+					const store = writable(initialValue)
+					stateNode.stores[curIndex] = store
+					store.subscribe(requestRender)
+					return store
+				}
+			},
+			useInput(store) {
+				if (!inputsMap.has(store)) {
+					const input = document.createElement("textarea")
+					input.setAttribute(
+						"style",
+						css`
+							position: fixed;
+							top: -9999px;
+							left: -9999px;
+						`,
+					)
+					root?.append(input)
+					inputsMap.set(store, input)
+					input.oninput = _ => store.set(input.value)
+					store.subscribe(value => (input.value = value))
+				}
+
+				return {
+					...store,
+					cleanup() {
+						inputsMap.get(store)?.remove()
 					},
-				]
+					focus() {
+						inputsMap.get(store)?.focus()
+					},
+				}
 			},
 			renderChild(component, { width: w, height: h, x, y }, ...args) {
 				const width = Math.max(w, 0)
 				const height = Math.max(h, 0)
 				const nextNode = stateNode.children.get(component) ?? {
 					children: new Map(),
-					values: [],
+					stores: [],
 					curIndex: 0,
 				}
 				nextNode.curIndex = 0
@@ -205,119 +238,91 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 					{ width, height, dx: dx + x, dy: dy + y },
 					rerender,
 					nextNode,
-					colorMap,
+					inputsMap,
 				)
 				return { x, y, component: component(context, ...args) }
-			},
-			setColor(x, y, color, length = 1) {
-				colorMap.set(x + dx, y + dy, color, length)
-			},
-			clearColors() {
-				colorMap.clear(dx, dy, width, height)
 			},
 		}
 	}
 
-	function render(tree: RenderedComponent): string[] {
-		let { text } = tree
-		for (const { x, y, component } of tree.children ?? []) {
-			for (let i = 0; i < component.text.length; i++) {
-				const parentLine = text[y + i]
-				if (!parentLine) continue
-				const childLine = component.text[i]
-				text[y + i] =
-					parentLine.slice(0, x) + childLine + parentLine.slice(x + childLine.length)
-			}
-		}
-		return text
+	interface StateNode {
+		stores: Writable<any>[]
+		children: Map<Function, StateNode>
+		curIndex: number
 	}
 
 	return function <Args extends any[]>(component: Component<Args>, ...args: Args) {
 		let tree: RenderedComponent
 		const stateRoot: StateNode = {
 			children: new Map(),
-			values: [],
+			stores: [],
 			curIndex: 0,
 		}
-		const colorMap = new ColorMap()
+		const inputsMap = new Map()
 		const unsub = size.subscribe(function rerender([width, height]) {
 			if (width * height == 0) return
 			if (tree) traverse(tree, comp => comp.onDestroy?.())
-			colorMap.reset()
 			stateRoot.curIndex = 0
 			const context = createContext(
 				{ width, height, dx: 0, dy: 0 },
 				rerender,
 				stateRoot,
-				colorMap,
+				inputsMap,
 			)
 			tree = component(context, ...args)
+			const colorIntervals = collect(tree, comp => comp.colors ?? []).flat()
 			const rendered = render(tree)
-			const html = colorMap.colorize(rendered).join("")
+			const colorized = colorize(rendered, colorIntervals)
+			const html = colorized.join("")
 			wrapper.innerHTML = html
 		})
 		return unsub
 	}
 }
 
-type Interval = {
-	start: number
-	fg?: string
-	bg?: string
-	end: number
+function render(tree: RenderedComponent): string[] {
+	let { text } = tree
+	for (const { x, y, component } of tree.children ?? []) {
+		for (let i = 0; i < component.text.length; i++) {
+			const parentLine = text[y + i]
+			if (!parentLine) continue
+			const childLine = component.text[i]
+			text[y + i] =
+				parentLine.slice(0, x) + childLine + parentLine.slice(x + childLine.length)
+		}
+	}
+	return text
 }
 
-type ColorOptions = { fg?: string; bg?: string }
-
-class ColorMap {
-	map: Interval[][] = []
-
-	reset() {
-		this.map = []
-	}
-
-	set(x: number, y: number, { fg, bg }: ColorOptions, length = 1) {
-		const row = this.map[y] ?? []
-		this.map[y] = row
-		row.push({ start: x, fg, bg, end: x + length })
-	}
-
-	clear(x: number, y: number, width: number, height: number) {
-		for (let i = y; i < y + height; i++) {
-			const row = this.map[i]
-			if (!row) continue
-			for (let j = 0; j < row.length; j++) {
-				const { start, end, fg, bg } = row[j]
-				const xx = x + width
-				if (x > end || xx < start) continue
-				if (x <= start) {
-					if (xx >= end) delete row[j]
-					else row[j].start = xx
-				} else {
-					row[j].end = x
-					if (xx < end) row.push({ start: xx, fg, bg, end })
-				}
-			}
+function colorize(rendered: string[], intervals: ColorInterval[]) {
+	// sort by row then start index
+	intervals.sort((a, b) => (a.y == b.y ? a.start - b.start : a.y - b.y))
+	// consolidate compatible adjacent color intervals to reduce the number of <span>
+	let cur = intervals[0]
+	let curEndIndex = cur.end ?? cur.start + (cur.length ?? 0) - 1
+	const consolidated: ColorInterval[] = []
+	for (let i = 1; i < intervals.length; i++) {
+		const { y, start, end, length, fg, bg } = intervals[i]
+		curEndIndex = cur.end ?? cur.start + (cur.length ?? 0) - 1
+		if (cur.y != y || cur.fg != fg || cur.bg != bg || curEndIndex != start) {
+			consolidated.push(cur)
+			cur = intervals[i]
+		} else {
+			cur.end = end ?? start + (length ?? 0) - 1
+			cur.length = undefined
 		}
 	}
-
-	colorize(rows: string[]) {
-		for (let y = 0; y < this.map.length; y++) {
-			const intervals = this.map[y]
-			if (!rows[y] || !intervals) continue
-			intervals.sort((a, b) => b.start - a.start)
-			for (const { start, end, fg, bg } of intervals) {
-				const classes = [fg ? `literal-fg-${fg}` : "", bg ? `literal-bg-${bg}` : ""]
-					.filter(Boolean)
-					.join(" ")
-				rows[y] =
-					rows[y].slice(0, start) +
-					`<span class="${classes}">` +
-					rows[y].slice(start, end) +
-					"</span>" +
-					rows[y].slice(end)
-			}
-		}
-		return rows
+	consolidated.push(cur)
+	// insert <span> at start and end of intervals
+	const split = rendered.map(row => row.split(""))
+	for (const { y, start, end, length, fg, bg } of consolidated) {
+		const row = split[y]
+		if (!row) continue
+		const endIndex = end ?? start + (length ?? 0) - 1
+		const fgClass = fg ? `literal-fg-${fg}` : ""
+		const bgClass = bg ? `literal-bg-${bg}` : ""
+		row[start] = `<span class="${fgClass} ${bgClass}">` + row[start]
+		row[endIndex] = row[endIndex] + "</span>"
 	}
+	return split.map(row => row.join(""))
 }
