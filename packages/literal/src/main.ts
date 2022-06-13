@@ -85,6 +85,7 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 			place-items: center;
 			text-align: center;
 			white-space: pre-wrap;
+			line-height: 1;
 		`,
 	)
 
