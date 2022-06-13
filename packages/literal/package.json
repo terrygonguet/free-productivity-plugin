@@ -13,6 +13,7 @@
 			"require": "./dist/literal.umd.js"
 		}
 	},
+	"types": "./types/main.d.ts",
 	"type": "module",
 	"scripts": {
 		"dev": "vite",
