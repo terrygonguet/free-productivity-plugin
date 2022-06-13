@@ -7,6 +7,7 @@ type Listener<T> = (value: T) => void
 export interface Readable<T> {
 	subscribe(f: Listener<T>): Unsubscriber
 	get(): T
+	value: T
 }
 
 export interface Writable<T> extends Readable<T> {
@@ -16,7 +17,13 @@ export interface Writable<T> extends Readable<T> {
 
 export function readable<T>(initialValue: T, start: OnStartCallback<T>): Readable<T> {
 	const { subscribe, get } = writable(initialValue, start)
-	return { subscribe, get }
+	return {
+		subscribe,
+		get,
+		get value() {
+			return get()
+		},
+	}
 }
 
 export function writable<T>(initialValue: T, start?: OnStartCallback<T>): Writable<T> {
@@ -48,6 +55,9 @@ export function writable<T>(initialValue: T, start?: OnStartCallback<T>): Writab
 		get() {
 			return value
 		},
+		get value() {
+			return value
+		},
 	}
 }
 
@@ -56,7 +66,7 @@ export function derived<T extends [any, ...any[]], U>(
 	f: (values: T) => U,
 ): Readable<U>
 export function derived<T, U>(dependency: Readable<T>, f: (value: T) => U): Readable<U>
-export function derived<T, U>(dependencies: Readable<T> | any[], f: (value: T) => U) {
+export function derived<T, U>(dependencies: Readable<T> | any[], f: (value: T) => U): Readable<U> {
 	let value: U
 	let listeners: Listener<U>[] = []
 
@@ -88,6 +98,9 @@ export function derived<T, U>(dependencies: Readable<T> | any[], f: (value: T) =
 			}
 		},
 		get() {
+			return value
+		},
+		get value() {
 			return value
 		},
 	}
