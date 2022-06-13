@@ -1,5 +1,6 @@
-import Popup from "./Popup.svelte"
+import { Literal } from "literal"
+import Border from "./Border"
+import "./styles.css"
 
-const app = new Popup({
-	target: document.querySelector("#app") ?? document.body,
-})
+const render = Literal({ target: "#app" })
+render(Border)

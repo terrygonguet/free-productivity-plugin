@@ -10,6 +10,7 @@ importers:
       body-parser: 1.19.1
       download: 8.0.0
       express: 4.17.2
+      literal: workspace:0.1.0
       npm-run-all: ^4.1.5
       safe-compare: 1.1.4
       svelte: ^3.44.0
@@ -19,6 +20,8 @@ importers:
       typescript: ^4.5.4
       vite: ^2.9.9
       web-ext: ^6.8.0
+    dependencies:
+      literal: link:../../packages/literal
     devDependencies:
       '@sveltejs/vite-plugin-svelte': 1.0.0-next.48_svelte@3.48.0+vite@2.9.10
       '@tsconfig/svelte': 2.0.1
