@@ -23,7 +23,7 @@ export type Component<Props extends {}> = (context: Context<Props>) => RenderedC
 
 export interface RenderedComponent {
 	text: MaybeReadable<string[]>
-	colors?: MaybeReadable<ColorInterval[]>
+	colors?: MaybeReadable<ColorInterval_end[]>
 	children?: MaybeReadable<ChildComponent[]>
 	onDestroy?(): void
 }
@@ -46,8 +46,7 @@ export interface Context<Props extends {}> {
 	size: Readable<Vec2D>
 	colors: Writable<{ [name: string]: string }>
 	properties: Readable<Props>
-	// colorize(interval: ColorInterval): ColorInterval
-	// useStore<T>(initialValue: T): Writable<T>
+	colorize(interval: ColorInterval): ColorInterval_end
 	// useInput(store: Writable<string>): InputStore
 	child<ChildProps extends {}>(options: {
 		size: MaybeReadable<Vec2D>
@@ -121,13 +120,19 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 				const tree = component(context)
 				listenTo(tree, scheduleRender)
 				return {
-					position: childPos,
+					position: asStore(position),
 					component: tree,
 				}
 			},
-			// colorize() {},
+			colorize(interval: ColorInterval) {
+				const endIndex =
+					"end" in interval ? interval.end : interval.start + interval.length - 1
+				const [ox, oy] = offset.value
+				const y = oy + interval.y
+				const start = ox + interval.start
+				return { ...interval, y, start, end: endIndex + ox }
+			},
 			// useInput() {},
-			// useStore() {},
 		}
 	}
 
@@ -269,29 +274,19 @@ function render(tree: RenderedComponent): string[] {
 	return parent
 }
 
-function colorize(rendered: string[], intervals: ColorInterval[]): string[] {
+function colorize(rendered: string[], intervals: ColorInterval_end[]): string[] {
 	if (intervals.length == 0) return rendered
-
-	function getEndIndex(cur: ColorInterval) {
-		return "end" in cur ? cur.end : cur.start + cur.length - 1
-	}
-	function toCI_end(interval: ColorInterval): ColorInterval_end {
-		return { ...interval, end: getEndIndex(interval) }
-	}
-
 	// sort by row then start index
 	intervals.sort((a, b) => (a.y == b.y ? a.start - b.start : a.y - b.y))
 	// consolidate compatible adjacent color intervals to reduce the number of <span>
-	let cur = toCI_end(intervals[0])
+	let cur = intervals[0]
 	const consolidated: ColorInterval_end[] = []
 	for (let i = 1; i < intervals.length; i++) {
-		const { y, start, fg, bg } = intervals[i]
-		if (cur.y != y || cur.fg != fg || cur.bg != bg || cur.end != start) {
+		const { y, start, end, fg, bg } = intervals[i]
+		if (cur.y != y || cur.fg != fg || cur.bg != bg || cur.end != start - 1) {
 			consolidated.push(cur)
-			cur = toCI_end(intervals[i])
-		} else {
-			cur.end = getEndIndex(intervals[i])
-		}
+			cur = intervals[i]
+		} else cur.end = end
 	}
 	consolidated.push(cur)
 	// insert <span> at start and end of intervals
