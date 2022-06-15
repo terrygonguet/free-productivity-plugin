@@ -1,10 +1,10 @@
-import { derived, Writable, writable } from "./reactive"
-import { collect, traverse } from "./utils"
+import { derived, isReadable, readable, Readable, Writable, writable } from "./reactive"
+import { asStore, asValue, collect, MaybeReadable, traverse } from "./utils"
 export * from "./reactive"
 export { arrayWith } from "./utils"
 
 const css = String.raw
-const defaultColors = {
+const defaultColors: Colors = {
 	defaultFG: "white",
 	defaultBG: "black",
 	gray: "#3D3C3A",
@@ -19,57 +19,72 @@ const defaultColors = {
 	black: "black",
 }
 
-export type Component<Args extends any[]> = (context: Context, ...args: Args) => RenderedComponent
+export type Component<Props extends {}> = (context: Context<Props>) => RenderedComponent
 
-export interface Context {
-	width: number
-	height: number
-	colors: Writable<{ [name: string]: string }>
-	setColor(interval: ColorInterval): ColorInterval
-	useStore<T>(initialValue: T): Writable<T>
-	useInput(store: Writable<string>): InputStore
-	renderChild<Args extends any[]>(
-		component: Component<Args>,
-		dimensions: { width: number; height: number; x: number; y: number },
-		...args: Args
-	): ChildComponent
+export interface RenderedComponent {
+	text: MaybeReadable<string[]>
+	colors?: MaybeReadable<ColorInterval[]>
+	children?: MaybeReadable<ChildComponent[]>
+	onDestroy?(): void
 }
+
+/**
+ * Helper to get type hints
+ */
+export function component<Props extends {}>(component: Component<Props>): Component<Props> {
+	return component
+}
+
+type Vec2D = [number, number]
 
 export interface ChildComponent {
-	x: number
-	y: number
-	component: RenderedComponent
+	position: Readable<Vec2D>
+	component: MaybeReadable<RenderedComponent>
 }
 
-type ColorInterval = {
+export interface Context<Props extends {}> {
+	size: Readable<Vec2D>
+	colors: Writable<{ [name: string]: string }>
+	properties: Readable<Props>
+	// colorize(interval: ColorInterval): ColorInterval
+	// useStore<T>(initialValue: T): Writable<T>
+	// useInput(store: Writable<string>): InputStore
+	child<ChildProps extends {}>(options: {
+		size: MaybeReadable<Vec2D>
+		position: MaybeReadable<Vec2D>
+		component: Component<ChildProps>
+		properties: MaybeReadable<ChildProps>
+	}): ChildComponent
+}
+
+interface ColorInterval_end {
 	y: number
 	start: number
 	fg?: string
 	bg?: string
-	end?: number
-	length?: number
+	end: number
 }
 
-export interface RenderedComponent {
-	text: string[]
-	children?: ChildComponent[]
-	onDestroy?(): void
-	colors?: ColorInterval[]
+interface ColorInterval_length {
+	y: number
+	start: number
+	fg?: string
+	bg?: string
+	length: number
+}
+
+export type ColorInterval = ColorInterval_end | ColorInterval_length
+
+export interface Colors {
+	defaultFG: string
+	defaultBG: string
+	[name: string]: string
 }
 
 export interface LiteralOptions {
 	target: HTMLElement | string
 	dev?: boolean
-	colors?: {
-		defaultFG: string
-		defaultBG: string
-		[name: string]: string
-	}
-}
-
-export interface InputStore extends Writable<string> {
-	focus(): void
-	cleanup(): void
+	colors?: Colors
 }
 
 export function Literal({ target, dev = false, colors = defaultColors }: LiteralOptions) {
@@ -77,6 +92,81 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 	if (!root) throw new Error("TODO")
 	root.innerHTML = ""
 
+	const reactiveColors = writable(colors)
+	const { size, wrapper } = init({ root, dev, colors: reactiveColors })
+
+	function createContext<ChildProps extends {}>(
+		size: Readable<Vec2D>,
+		offset: Readable<Vec2D>,
+		properties: Readable<ChildProps>,
+		colors: Writable<Colors>,
+		state: State,
+	): Context<ChildProps> {
+		return {
+			size,
+			colors,
+			properties,
+			child({ size, position, component, properties }) {
+				const childPos = derived(
+					[offset, asStore(position)],
+					([[dx, dy], [x, y]]) => [dx + x, dy + y] as [number, number],
+				)
+				const context = createContext(
+					derived(asStore(size), ([w, h]) => [Math.max(0, w), Math.max(0, h)]),
+					childPos,
+					asStore(properties),
+					colors,
+					state,
+				)
+				const tree = component(context)
+				listenTo(tree, scheduleRender)
+				return {
+					position: childPos,
+					component: tree,
+				}
+			},
+			// colorize() {},
+			// useInput() {},
+			// useStore() {},
+		}
+	}
+
+	let rafId: number
+	function scheduleRender() {
+		cancelAnimationFrame(rafId)
+		rafId = requestAnimationFrame(rerender)
+	}
+	function rerender() {
+		const [w, h] = size.value
+		if (w == 0 || h == 0) return
+		const rendered = render(tree)
+		const intervals = collect(tree, comp => asValue(comp.colors ?? [])).flat()
+		const colorized = colorize(rendered, intervals)
+		const html = colorized.join("")
+		wrapper.innerHTML = html
+	}
+
+	let tree: RenderedComponent
+	return function <Props extends {}>(
+		component: Component<Props>,
+		properties: MaybeReadable<Props>,
+	) {
+		const rootState = State.create(root)
+		const zero = writable<Vec2D>([0, 0])
+		const context = createContext(size, zero, asStore(properties), reactiveColors, rootState)
+		tree = component(context)
+		listenTo(tree, scheduleRender)
+		size.subscribe(scheduleRender)
+	}
+}
+
+interface InitOptions {
+	root: HTMLElement
+	dev: boolean
+	colors: Writable<Colors>
+}
+
+function init({ root, dev, colors }: InitOptions) {
 	root.setAttribute(
 		"style",
 		css`
@@ -85,7 +175,7 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 			place-items: center;
 			text-align: center;
 			white-space: pre-wrap;
-			line-height: 1;
+			/* line-height: 1; */
 		`,
 	)
 
@@ -123,24 +213,25 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 	})
 	rootObserver.observe(root)
 
-	let charSize = writable<[number, number]>([8, 16])
+	let charSize = writable<Vec2D>([8, 16])
 	if (dev)
-		derived(charSize, size => console.log("Characters size changed to " + JSON.stringify(size)))
-	let rootSize = writable<[number, number]>([0, 0])
+		charSize.subscribe(size =>
+			console.log("Characters size changed to " + JSON.stringify(size)),
+		)
+	let rootSize = writable<Vec2D>([0, 0])
 	if (dev)
-		derived(rootSize, size => console.log("Container size changed to " + JSON.stringify(size)))
+		rootSize.subscribe(size => console.log("Container size changed to " + JSON.stringify(size)))
 	let size = derived(
 		[charSize, rootSize],
 		([[$charW, $charH], [$rootW, $rootH]]) =>
-			[Math.floor($rootW / $charW), Math.floor($rootH / $charH)] as [number, number],
+			[Math.floor($rootW / $charW), Math.floor($rootH / $charH)] as Vec2D,
 	)
-	if (dev) derived(size, size => console.log("Grid size changed to " + JSON.stringify(size)))
+	if (dev) size.subscribe(size => console.log("Grid size changed to " + JSON.stringify(size)))
 
 	const styles = document.querySelector("style#literal-styles") ?? document.createElement("style")
 	styles.id = "literal-styles"
 	document.head.append(styles)
-	const reactiveColors = writable(colors)
-	reactiveColors.subscribe(colors => {
+	colors.subscribe(colors => {
 		root.style.color = colors.defaultFG
 		root.style.backgroundColor = colors.defaultBG
 		const vars = Object.entries(colors).flatMap(([name, value]) => [
@@ -158,172 +249,142 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 		styles.innerHTML = vars.join("\n")
 	})
 
-	function createContext(
-		{ width, height, dx, dy }: { width: number; height: number; dx: number; dy: number },
-		rerender: (dimensions: [number, number]) => void,
-		stateNode: StateNode,
-		inputsMap: Map<Writable<string>, HTMLTextAreaElement> = new Map(),
-	): Context {
-		let rafID: number
-		function requestRender() {
-			cancelAnimationFrame(rafID)
-			rafID = requestAnimationFrame(() => {
-				const $size = size.get()
-				rerender($size)
-			})
-		}
-
-		return {
-			width,
-			height,
-			colors: reactiveColors,
-			setColor({ y, start, end, length, fg, bg }) {
-				return {
-					y: y + dy,
-					start: start + dx,
-					end: end ? end + dx : undefined,
-					length,
-					fg,
-					bg,
-				}
-			},
-			useStore(initialValue) {
-				let curIndex = stateNode.curIndex++
-				const store = stateNode.stores[curIndex]
-				if (store) return store
-				else {
-					const store = writable(initialValue)
-					stateNode.stores[curIndex] = store
-					store.subscribe(requestRender)
-					return store
-				}
-			},
-			useInput(store) {
-				if (!inputsMap.has(store)) {
-					const input = document.createElement("textarea")
-					input.setAttribute(
-						"style",
-						css`
-							position: fixed;
-							top: -9999px;
-							left: -9999px;
-						`,
-					)
-					root?.append(input)
-					inputsMap.set(store, input)
-					input.oninput = _ => store.set(input.value)
-					store.subscribe(value => (input.value = value))
-				}
-
-				return {
-					...store,
-					cleanup() {
-						inputsMap.get(store)?.remove()
-					},
-					focus() {
-						inputsMap.get(store)?.focus()
-					},
-				}
-			},
-			renderChild(component, { width: w, height: h, x, y }, ...args) {
-				const width = Math.max(w, 0)
-				const height = Math.max(h, 0)
-				const nextNode = stateNode.children.get(component) ?? {
-					children: new Map(),
-					stores: [],
-					curIndex: 0,
-				}
-				nextNode.curIndex = 0
-				stateNode.children.set(component, nextNode)
-				const context = createContext(
-					{ width, height, dx: dx + x, dy: dy + y },
-					rerender,
-					nextNode,
-					inputsMap,
-				)
-				return { x, y, component: component(context, ...args) }
-			},
-		}
-	}
-
-	interface StateNode {
-		stores: Writable<any>[]
-		children: Map<Function, StateNode>
-		curIndex: number
-	}
-
-	return function <Args extends any[]>(component: Component<Args>, ...args: Args) {
-		let tree: RenderedComponent
-		const stateRoot: StateNode = {
-			children: new Map(),
-			stores: [],
-			curIndex: 0,
-		}
-		const inputsMap = new Map()
-		const unsub = size.subscribe(function rerender([width, height]) {
-			if (width * height == 0) return
-			if (tree) traverse(tree, comp => comp.onDestroy?.())
-			stateRoot.curIndex = 0
-			const context = createContext(
-				{ width, height, dx: 0, dy: 0 },
-				rerender,
-				stateRoot,
-				inputsMap,
-			)
-			tree = component(context, ...args)
-			const colorIntervals = collect(tree, comp => comp.colors ?? []).flat()
-			const rendered = render(tree)
-			const colorized = colorize(rendered, colorIntervals)
-			const html = colorized.join("")
-			wrapper.innerHTML = html
-		})
-		return unsub
-	}
+	return { wrapper, size }
 }
 
 function render(tree: RenderedComponent): string[] {
-	let { text } = tree
-	for (const { x, y, component } of tree.children ?? []) {
-		for (let i = 0; i < component.text.length; i++) {
-			const parentLine = text[y + i]
+	const parent = asValue(tree.text)
+	const children = asValue(tree.children ?? [])
+	for (const { component, position } of children) {
+		const child = render(asValue(component))
+		const [x, y] = asValue(position)
+		for (let i = 0; i < child.length; i++) {
+			const parentLine = parent[y + i]
 			if (!parentLine) continue
-			const childLine = component.text[i]
-			text[y + i] =
+			const childLine = child[i]
+			parent[y + i] =
 				parentLine.slice(0, x) + childLine + parentLine.slice(x + childLine.length)
 		}
 	}
-	return text
+	return parent
 }
 
-function colorize(rendered: string[], intervals: ColorInterval[]) {
+function colorize(rendered: string[], intervals: ColorInterval[]): string[] {
+	if (intervals.length == 0) return rendered
+
+	function getEndIndex(cur: ColorInterval) {
+		return "end" in cur ? cur.end : cur.start + cur.length - 1
+	}
+	function toCI_end(interval: ColorInterval): ColorInterval_end {
+		return { ...interval, end: getEndIndex(interval) }
+	}
+
 	// sort by row then start index
 	intervals.sort((a, b) => (a.y == b.y ? a.start - b.start : a.y - b.y))
 	// consolidate compatible adjacent color intervals to reduce the number of <span>
-	let cur = intervals[0]
-	let curEndIndex = cur.end ?? cur.start + (cur.length ?? 0) - 1
-	const consolidated: ColorInterval[] = []
+	let cur = toCI_end(intervals[0])
+	const consolidated: ColorInterval_end[] = []
 	for (let i = 1; i < intervals.length; i++) {
-		const { y, start, end, length, fg, bg } = intervals[i]
-		curEndIndex = cur.end ?? cur.start + (cur.length ?? 0) - 1
-		if (cur.y != y || cur.fg != fg || cur.bg != bg || curEndIndex != start) {
+		const { y, start, fg, bg } = intervals[i]
+		if (cur.y != y || cur.fg != fg || cur.bg != bg || cur.end != start) {
 			consolidated.push(cur)
-			cur = intervals[i]
+			cur = toCI_end(intervals[i])
 		} else {
-			cur.end = end ?? start + (length ?? 0) - 1
-			cur.length = undefined
+			cur.end = getEndIndex(intervals[i])
 		}
 	}
 	consolidated.push(cur)
 	// insert <span> at start and end of intervals
 	const split = rendered.map(row => row.split(""))
-	for (const { y, start, end, length, fg, bg } of consolidated) {
+	for (const { y, start, end, fg, bg } of consolidated) {
 		const row = split[y]
 		if (!row) continue
-		const endIndex = end ?? start + (length ?? 0) - 1
 		const fgClass = fg ? `literal-fg-${fg}` : ""
 		const bgClass = bg ? `literal-bg-${bg}` : ""
 		row[start] = `<span class="${fgClass} ${bgClass}">` + row[start]
-		row[endIndex] = row[endIndex] + "</span>"
+		row[end] = row[end] + "</span>"
 	}
 	return split.map(row => row.join(""))
+}
+
+function listenTo(comp: RenderedComponent, cb: () => void) {
+	if (isReadable(comp.text)) comp.text.subscribe(cb)
+	if (isReadable(comp.colors)) comp.colors.subscribe(cb)
+	if (isReadable(comp.children)) comp.children.subscribe(cb)
+}
+
+export interface InputStore extends Writable<string> {
+	focus(): void
+	cleanup(): void
+}
+
+class State {
+	stores: Writable<any>[] = []
+	children: Map<Function, State> = new Map()
+	curIndex: number = 0
+
+	inputs: Map<Writable<string>, HTMLInputElement> = new Map()
+	textareas: Map<Writable<string>, HTMLTextAreaElement> = new Map()
+	root: HTMLElement
+
+	private constructor(root: HTMLElement) {
+		this.root = root
+	}
+
+	static create(root: HTMLElement) {
+		return new State(root)
+	}
+
+	useInput(store: Writable<string>, { multiline = false } = {}): InputStore {
+		const map = multiline ? this.textareas : this.inputs
+		if (!this.inputs.has(store)) {
+			const el = document.createElement(multiline ? "textarea" : "input")
+			if (!multiline) (el as any).type = "text"
+			el.setAttribute(
+				"style",
+				css`
+					position: fixed;
+					top: -9999px;
+					left: -9999px;
+				`,
+			)
+			this.root.append(el)
+			map.set(store, el as any)
+			el.oninput = _ => store.set(el.value)
+			store.subscribe(value => (el.value = value))
+		}
+
+		return {
+			...store,
+			cleanup() {
+				map.get(store)?.remove()
+			},
+			focus() {
+				map.get(store)?.focus()
+			},
+		}
+	}
+
+	child<T>(component: Component<T>): State {
+		if (this.children.has(component)) return this.children.get(component)!
+		else {
+			const childNode = new State(this.root)
+			childNode.inputs = this.inputs
+			childNode.textareas = this.textareas
+			this.children.set(component, childNode)
+			return childNode
+		}
+	}
+
+	useStore<T>(initialValue: T): Writable<T> {
+		let curIndex = this.curIndex++
+		const store = this.stores[curIndex]
+		if (store) return store
+		else {
+			const store = writable(initialValue)
+			this.stores[curIndex] = store
+			// store.subscribe(requestRender)
+			return store
+		}
+	}
 }

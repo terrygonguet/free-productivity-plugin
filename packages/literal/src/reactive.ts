@@ -15,6 +15,15 @@ export interface Writable<T> extends Readable<T> {
 	update(f: (value: T) => T): void
 }
 
+export function isReadable<T>(maybeStore: any): maybeStore is Readable<T> {
+	return (
+		!!maybeStore &&
+		"subscribe" in maybeStore &&
+		"get" in maybeStore &&
+		maybeStore?.get() == maybeStore?.value
+	)
+}
+
 export function readable<T>(initialValue: T, start: OnStartCallback<T>): Readable<T> {
 	const { subscribe, get } = writable(initialValue, start)
 	return {
@@ -24,6 +33,10 @@ export function readable<T>(initialValue: T, start: OnStartCallback<T>): Readabl
 			return get()
 		},
 	}
+}
+
+export function isWritable<T>(maybeStore: any): maybeStore is Writable<T> {
+	return isReadable(maybeStore) && "set" in maybeStore && "update" in maybeStore
 }
 
 export function writable<T>(initialValue: T, start?: OnStartCallback<T>): Writable<T> {
