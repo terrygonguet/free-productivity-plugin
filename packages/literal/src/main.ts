@@ -1,5 +1,5 @@
-import { derived, isReadable, readable, Readable, Writable, writable } from "./reactive"
-import { asStore, asValue, collect, MaybeReadable, traverse } from "./utils"
+import { derived, isReadable, Readable, Writable, writable } from "./reactive"
+import { asStore, asValue, collect, MaybeReadable } from "./utils"
 export * from "./reactive"
 export { arrayWith } from "./utils"
 
@@ -47,13 +47,20 @@ export interface Context<Props extends {}> {
 	colors: Writable<{ [name: string]: string }>
 	properties: Readable<Props>
 	colorize(interval: ColorInterval): ColorInterval_end
-	// useInput(store: Writable<string>): InputStore
+	useInput(multiline?: false, initialValue?: string): InputStore<HTMLInputElement>
+	useInput(multiline: true, initialValue?: string): InputStore<HTMLTextAreaElement>
 	child<ChildProps extends {}>(options: {
 		size: MaybeReadable<Vec2D>
 		position: MaybeReadable<Vec2D>
 		component: Component<ChildProps>
 		properties: MaybeReadable<ChildProps>
 	}): ChildComponent
+}
+
+export interface InputStore<T> extends Writable<string> {
+	element: T
+	cleanup(): void
+	set width(width: number)
 }
 
 interface ColorInterval_end {
@@ -99,7 +106,6 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 		offset: Readable<Vec2D>,
 		properties: Readable<ChildProps>,
 		colors: Writable<Colors>,
-		state: State,
 	): Context<ChildProps> {
 		return {
 			size,
@@ -115,7 +121,6 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 					childPos,
 					asStore(properties),
 					colors,
-					state,
 				)
 				const tree = component(context)
 				listenTo(tree, scheduleRender)
@@ -132,7 +137,38 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 				const start = ox + interval.start
 				return { ...interval, y, start, end: endIndex + ox }
 			},
-			// useInput() {},
+			useInput(multiline = false, initialValue = "") {
+				const store = writable(initialValue)
+				const el = document.createElement(multiline ? "textarea" : "input")
+				if (!multiline) el.setAttribute("type", "text")
+				el.setAttribute(
+					"style",
+					css`
+						position: fixed;
+						top: -99999px;
+						left: -99999px;
+					`,
+				)
+				el.addEventListener("keyup", () => store.update(text => text))
+				root?.append(el)
+				el.oninput = _ => store.set(el.value)
+				const unsub = store.subscribe(value => {
+					el.value = value
+					scheduleRender()
+				})
+				return {
+					...store,
+					element: el,
+					cleanup() {
+						el.remove()
+						unsub()
+					},
+					set width(width: number) {
+						el.setAttribute("cols", width.toString())
+						el.setAttribute("size", width.toString())
+					},
+				} as any
+			},
 		}
 	}
 
@@ -161,9 +197,8 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 		component: Component<Props>,
 		properties: MaybeReadable<Props>,
 	) {
-		const rootState = State.create(root)
 		const zero = writable<Vec2D>([0, 0])
-		const context = createContext(size, zero, asStore(properties), reactiveColors, rootState)
+		const context = createContext(size, zero, asStore(properties), reactiveColors)
 		tree = component(context)
 		activeComponents = new Set(collect(tree, comp => comp))
 		listenTo(tree, scheduleRender)
@@ -312,80 +347,4 @@ function listenTo(comp: RenderedComponent, cb: () => void) {
 	if (isReadable(comp.text)) comp.text.subscribe(cb)
 	if (isReadable(comp.colors)) comp.colors.subscribe(cb)
 	if (isReadable(comp.children)) comp.children.subscribe(cb)
-}
-
-export interface InputStore extends Writable<string> {
-	focus(): void
-	cleanup(): void
-}
-
-class State {
-	stores: Writable<any>[] = []
-	children: Map<Function, State> = new Map()
-	curIndex: number = 0
-
-	inputs: Map<Writable<string>, HTMLInputElement> = new Map()
-	textareas: Map<Writable<string>, HTMLTextAreaElement> = new Map()
-	root: HTMLElement
-
-	private constructor(root: HTMLElement) {
-		this.root = root
-	}
-
-	static create(root: HTMLElement) {
-		return new State(root)
-	}
-
-	useInput(store: Writable<string>, { multiline = false } = {}): InputStore {
-		const map = multiline ? this.textareas : this.inputs
-		if (!this.inputs.has(store)) {
-			const el = document.createElement(multiline ? "textarea" : "input")
-			if (!multiline) (el as any).type = "text"
-			el.setAttribute(
-				"style",
-				css`
-					position: fixed;
-					top: -9999px;
-					left: -9999px;
-				`,
-			)
-			this.root.append(el)
-			map.set(store, el as any)
-			el.oninput = _ => store.set(el.value)
-			store.subscribe(value => (el.value = value))
-		}
-
-		return {
-			...store,
-			cleanup() {
-				map.get(store)?.remove()
-			},
-			focus() {
-				map.get(store)?.focus()
-			},
-		}
-	}
-
-	child<T>(component: Component<T>): State {
-		if (this.children.has(component)) return this.children.get(component)!
-		else {
-			const childNode = new State(this.root)
-			childNode.inputs = this.inputs
-			childNode.textareas = this.textareas
-			this.children.set(component, childNode)
-			return childNode
-		}
-	}
-
-	useStore<T>(initialValue: T): Writable<T> {
-		let curIndex = this.curIndex++
-		const store = this.stores[curIndex]
-		if (store) return store
-		else {
-			const store = writable(initialValue)
-			this.stores[curIndex] = store
-			// store.subscribe(requestRender)
-			return store
-		}
-	}
 }

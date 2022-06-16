@@ -118,3 +118,11 @@ export function derived<T, U>(dependencies: Readable<T> | any[], f: (value: T) =
 		},
 	}
 }
+
+export function subscribe<T extends [any, ...any[]]>(
+	dependencies: { [Index in keyof T]: Readable<T[Index]> },
+	f: (values: T) => void,
+): Unsubscriber {
+	const store = derived<T, T>(dependencies, values => values)
+	return store.subscribe(f)
+}
