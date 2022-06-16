@@ -144,7 +144,10 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 	function rerender() {
 		const [w, h] = size.value
 		if (w == 0 || h == 0) return
+		previousComponents = activeComponents
 		const rendered = render(tree)
+		activeComponents = new Set(collect(tree, comp => comp))
+		previousComponents.forEach(comp => activeComponents.has(comp) || comp.onDestroy?.())
 		const intervals = collect(tree, comp => asValue(comp.colors ?? [])).flat()
 		const colorized = colorize(rendered, intervals)
 		const html = colorized.join("")
@@ -152,6 +155,8 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 	}
 
 	let tree: RenderedComponent
+	let previousComponents: Set<RenderedComponent> = new Set()
+	let activeComponents: Set<RenderedComponent> = new Set()
 	return function <Props extends {}>(
 		component: Component<Props>,
 		properties: MaybeReadable<Props>,
@@ -160,6 +165,7 @@ export function Literal({ target, dev = false, colors = defaultColors }: Literal
 		const zero = writable<Vec2D>([0, 0])
 		const context = createContext(size, zero, asStore(properties), reactiveColors, rootState)
 		tree = component(context)
+		activeComponents = new Set(collect(tree, comp => comp))
 		listenTo(tree, scheduleRender)
 		size.subscribe(scheduleRender)
 	}
@@ -258,7 +264,7 @@ function init({ root, dev, colors }: InitOptions) {
 }
 
 function render(tree: RenderedComponent): string[] {
-	const parent = asValue(tree.text)
+	const parent = asValue(tree.text).slice()
 	const children = asValue(tree.children ?? [])
 	for (const { component, position } of children) {
 		const child = render(asValue(component))
