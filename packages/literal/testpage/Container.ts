@@ -1,5 +1,5 @@
 import { arrayWith, component, derived, writable } from "../src/main"
-import Conways from "./Conways"
+import Typewriter from "./Typewriter"
 
 const Container = component(function ({ size, child, colorize }) {
 	return {
@@ -33,7 +33,7 @@ const Container = component(function ({ size, child, colorize }) {
 			child({
 				size: derived(size, ([w, h]) => [w - 2, h - 2]),
 				position: [1, 1],
-				component: Conways,
+				component: Typewriter,
 				properties: {},
 			}),
 		],
