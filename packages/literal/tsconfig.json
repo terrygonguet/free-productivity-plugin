@@ -3,7 +3,7 @@
 		"target": "ESNext",
 		"useDefineForClassFields": true,
 		"module": "ESNext",
-		"lib": ["ESNext", "DOM"],
+		"lib": ["ES2022", "DOM"],
 		"moduleResolution": "Node",
 		"strict": true,
 		"sourceMap": true,
@@ -20,5 +20,5 @@
 		"declarationDir": "./types",
 		"declarationMap": true
 	},
-	"include": ["src"]
+	"include": ["src", "testpage"]
 }
