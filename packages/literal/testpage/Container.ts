@@ -1,5 +1,5 @@
-import { arrayWith, component, derived } from "../src/main"
-import Fire from "./Fire"
+import { arrayWith, component, derived, writable } from "../src/main"
+import Conways from "./Conways"
 
 const Container = component(function ({ size, child, colorize }) {
 	return {
@@ -33,7 +33,7 @@ const Container = component(function ({ size, child, colorize }) {
 			child({
 				size: derived(size, ([w, h]) => [w - 2, h - 2]),
 				position: [1, 1],
-				component: Fire,
+				component: Conways,
 				properties: {},
 			}),
 		],
